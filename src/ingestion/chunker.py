@@ -34,6 +34,7 @@ class ChunkConfig:
     pause_threshold_seconds: float = 3.0
     similarity_threshold: float = 0.7  # Boundaries where similarity < this
     max_continuation_overflow: int = 100
+    embedding_strategy: str = "local"  # "local" or "deepinfra"
 
 
 @dataclass
@@ -123,31 +124,38 @@ class HybridChunker:
         r"^(Cette|This|Ces|These)",
     ]
 
-    def __init__(self, config: ChunkConfig | None = None):
-        """Initialize the chunker with configuration."""
+    def __init__(
+        self,
+        config: ChunkConfig | None = None,
+        embedding_strategy: "EmbeddingStrategy | None" = None,
+    ):
+        """
+        Initialize the chunker with configuration.
+
+        Args:
+            config: Chunking configuration
+            embedding_strategy: Optional embedding strategy instance.
+                If not provided, creates one based on config.embedding_strategy.
+        """
         self.config = config or ChunkConfig()
         self._compiled_continuation_patterns = self._compile_continuation_patterns()
-        self._embedding_model = None
+
+        # Use injected strategy or create from config
+        if embedding_strategy is not None:
+            self._embedding_strategy = embedding_strategy
+        else:
+            from .embeddings import create_embedding_strategy
+            self._embedding_strategy = create_embedding_strategy(
+                self.config.embedding_strategy
+            )
 
     def _compile_continuation_patterns(self) -> list[re.Pattern]:
         """Compile continuation patterns."""
         return [re.compile(p, re.IGNORECASE) for p in self.CONTINUATION_PATTERNS]
 
-    def _get_embedding_model(self):
-        """Lazy load BGE-M3 embedding model."""
-        if self._embedding_model is None:
-            from FlagEmbedding import BGEM3FlagModel
-            logger.info("Loading BGE-M3 embedding model...")
-            self._embedding_model = BGEM3FlagModel(
-                "BAAI/bge-m3",
-                use_fp16=True,
-            )
-            logger.info("BGE-M3 model loaded")
-        return self._embedding_model
-
     def compute_sentence_embeddings(self, sentences: list[Sentence]) -> np.ndarray:
         """
-        Compute embeddings for all sentences using BGE-M3.
+        Compute embeddings for all sentences using the configured strategy.
 
         Args:
             sentences: List of sentences to embed
@@ -158,20 +166,9 @@ class HybridChunker:
         if not sentences:
             return np.array([])
 
-        model = self._get_embedding_model()
         texts = [s.text for s in sentences]
-
         logger.debug(f"Computing embeddings for {len(texts)} sentences")
-        embeddings = model.encode(
-            texts,
-            batch_size=32,
-            max_length=256,
-            return_dense=True,
-            return_sparse=False,
-            return_colbert_vecs=False,
-        )
-
-        return embeddings["dense_vecs"]
+        return self._embedding_strategy.embed(texts)
 
     def detect_boundaries_by_embedding(
         self,
@@ -629,6 +626,12 @@ def main():
         default=0.7,
         help="Cosine similarity threshold for boundary detection (default: 0.7)",
     )
+    parser.add_argument(
+        "--embedding-strategy",
+        choices=["local", "deepinfra"],
+        default="local",
+        help="Embedding strategy: local (GPU/CPU) or deepinfra (API)",
+    )
 
     args = parser.parse_args()
 
@@ -641,6 +644,7 @@ def main():
         min_tokens=args.min_tokens,
         max_tokens=args.max_tokens,
         similarity_threshold=args.similarity_threshold,
+        embedding_strategy=args.embedding_strategy,
     )
 
     chunker = HybridChunker(config=config)
