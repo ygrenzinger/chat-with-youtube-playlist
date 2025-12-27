@@ -61,6 +61,15 @@ class TranscriberConfig:
     retries: int = 3
 
 
+@dataclass
+class TranscriptionResult:
+    """Result of a transcription including usage statistics."""
+    transcription: dict
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+
 class AudioTranscriber:
     """Transcribe YouTube videos using yt-dlp and Google GenAI."""
 
@@ -123,7 +132,7 @@ class AudioTranscriber:
         logger.info(f"Audio downloaded: {audio_path}")
         return audio_path, video_title
 
-    def transcribe_audio(self, audio_path: Path) -> dict:
+    def transcribe_audio(self, audio_path: Path) -> TranscriptionResult:
         """
         Transcribe an audio file using Google GenAI with timestamps.
 
@@ -131,7 +140,7 @@ class AudioTranscriber:
             audio_path: Path to the audio file
 
         Returns:
-            Dict with segments containing start_time, end_time, and content
+            TranscriptionResult with transcription dict and token usage stats
         """
         logger.info(f"Transcribing audio: {audio_path}")
 
@@ -177,9 +186,49 @@ For each segment provide: start_time, end_time, speaker, language, content."""
 
         transcription = json.loads(response.text)
         segment_count = len(transcription.get("segments", []))
-        logger.info(f"Transcription complete: {segment_count} segments")
 
-        return transcription
+        # Extract usage metadata for cost tracking
+        usage = response.usage_metadata
+        input_tokens = usage.prompt_token_count if usage else 0
+        output_tokens = usage.candidates_token_count if usage else 0
+        total_tokens = usage.total_token_count if usage else 0
+
+        logger.info(
+            f"Transcription complete: {segment_count} segments, "
+            f"{input_tokens:,} input tokens, {output_tokens:,} output tokens"
+        )
+
+        return TranscriptionResult(
+            transcription=transcription,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+        )
+
+    def _normalize_timestamp(self, timestamp: str) -> str:
+        """
+        Normalize timestamp to standard SRT format: HH:MM:SS,mmm
+
+        Handles various Gemini output formats:
+        - MM:SS:mmm -> 00:MM:SS,mmm
+        - MM:SS,mmm -> 00:MM:SS,mmm
+        - HH:MM:SS:mmm -> HH:MM:SS,mmm
+        - HH:MM:SS,mmm -> HH:MM:SS,mmm (already valid)
+        """
+        # Replace all separators with colons for parsing
+        parts = timestamp.replace(",", ":").split(":")
+
+        if len(parts) == 3:
+            # Format: MM:SS:mmm -> add hours
+            mm, ss, mmm = parts
+            return f"00:{mm.zfill(2)}:{ss.zfill(2)},{mmm.zfill(3)}"
+        elif len(parts) == 4:
+            # Format: HH:MM:SS:mmm
+            hh, mm, ss, mmm = parts
+            return f"{hh.zfill(2)}:{mm.zfill(2)}:{ss.zfill(2)},{mmm.zfill(3)}"
+        else:
+            # Fallback: return as-is with comma separator
+            return timestamp.replace(":", ",", timestamp.count(":") - 1) if ":" in timestamp else timestamp
 
     def _convert_to_srt(self, transcription: dict) -> str:
         """
@@ -193,8 +242,8 @@ For each segment provide: start_time, end_time, speaker, language, content."""
         """
         srt_lines = []
         for i, segment in enumerate(transcription.get("segments", []), start=1):
-            start_time = segment.get("start_time", "00:00:00,000")
-            end_time = segment.get("end_time", "00:00:00,000")
+            start_time = self._normalize_timestamp(segment.get("start_time", "00:00:00,000"))
+            end_time = self._normalize_timestamp(segment.get("end_time", "00:00:00,000"))
             speaker = segment.get("speaker", "")
             content = segment.get("content", "")
 
@@ -241,7 +290,7 @@ For each segment provide: start_time, end_time, speaker, language, content."""
         url: str,
         output_path: Path | None = None,
         delete_audio: bool = False,
-    ) -> tuple[Path, Path]:
+    ) -> tuple[Path, Path, TranscriptionResult]:
         """
         Full pipeline: download audio, transcribe, and save.
 
@@ -251,21 +300,22 @@ For each segment provide: start_time, end_time, speaker, language, content."""
             delete_audio: Whether to delete the audio file after transcription
 
         Returns:
-            Tuple of (json_path, srt_path)
+            Tuple of (json_path, srt_path, transcription_result)
         """
         # Download audio
         audio_path, _ = self.download_audio(url)
 
         try:
             # Transcribe
-            transcription = self.transcribe_audio(audio_path)
+            result = self.transcribe_audio(audio_path)
 
             # Determine base output path (same directory as audio)
             if output_path is None:
                 output_path = audio_path.with_suffix("")
 
             # Save transcription (both JSON and SRT)
-            return self.save_transcription(transcription, output_path)
+            json_path, srt_path = self.save_transcription(result.transcription, output_path)
+            return json_path, srt_path, result
 
         finally:
             # Clean up audio if requested
@@ -318,12 +368,13 @@ def main():
     transcriber = AudioTranscriber(config=config)
 
     try:
-        json_path, srt_path = transcriber.process(
+        json_path, srt_path, result = transcriber.process(
             url=args.url,
             output_path=args.output,
             delete_audio=args.delete_audio,
         )
         print(f"\nTranscription saved to:\n  JSON: {json_path}\n  SRT:  {srt_path}")
+        print(f"\nToken usage:\n  Input:  {result.input_tokens:,}\n  Output: {result.output_tokens:,}")
     except Exception as e:
         logger.error(f"Transcription failed: {e}")
         raise SystemExit(1)
