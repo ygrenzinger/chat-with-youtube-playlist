@@ -522,6 +522,7 @@ def load_chunked_video(json_path: Path) -> ChunkedVideo:
             context_after=c.get("context_after", ""),
             youtube_link=c.get("youtube_link", ""),
             parent_chunk_id=c.get("parent_chunk_id", ""),
+            youtube_video_id=c.get("youtube_video_id", ""),
         )
         for c in data.get("chunks", [])
     ]
@@ -679,17 +680,21 @@ def main():
                 results = store.search_with_context(args.query, k=args.k)
                 print(f"\nSearch: \"{args.query}\"\n")
                 for i, r in enumerate(results, 1):
-                    print(f"{i}. [{r.chunk.distance:.3f}] {r.chunk.video_title}")
+                    mins = int(r.chunk.start_time // 60)
+                    secs = int(r.chunk.start_time % 60)
+                    print(f"{i}. [{r.chunk.distance:.3f}] {r.chunk.video_title} ({mins}:{secs:02d})")
                     print(f"   {r.chunk.youtube_link}")
                     print(f"   \"{r.chunk.text[:200]}...\"")
                     if r.parent_chunk_id:
-                        print(f"   [Parent: {len(r.parent_text)} chars]")
+                        print(f"   [Parent context: {len(r.parent_text)} chars]")
                     print()
             else:
                 results = store.search(args.query, k=args.k)
                 print(f"\nSearch: \"{args.query}\"\n")
                 for i, r in enumerate(results, 1):
-                    print(f"{i}. [{r.distance:.3f}] {r.video_title}")
+                    mins = int(r.start_time // 60)
+                    secs = int(r.start_time % 60)
+                    print(f"{i}. [{r.distance:.3f}] {r.video_title} ({mins}:{secs:02d})")
                     print(f"   {r.youtube_link}")
                     print(f"   \"{r.text[:200]}...\"")
                     print()

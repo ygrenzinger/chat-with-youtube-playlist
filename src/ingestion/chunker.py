@@ -76,6 +76,7 @@ class Chunk:
     context_after: str = ""
     youtube_link: str = ""
     parent_chunk_id: str = ""  # Reference to parent chunk for context expansion
+    youtube_video_id: str = ""  # Actual YouTube video ID for URL generation
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -470,6 +471,7 @@ class HybridChunker:
         index: int,
         video_id: str,
         video_title: str,
+        youtube_video_id: str = "",
     ) -> Chunk:
         """Create a chunk from a list of segments."""
         text = " ".join(s.text for s in segments)
@@ -478,7 +480,9 @@ class HybridChunker:
         token_count = self.count_tokens(text)
 
         # Generate YouTube link (time in integer seconds)
-        youtube_link = f"https://youtube.com/watch?v={video_id}&t={int(start_time)}"
+        # Use youtube_video_id if provided, otherwise fall back to video_id
+        yt_id = youtube_video_id or video_id
+        youtube_link = f"https://www.youtube.com/watch?v={yt_id}&t={int(start_time)}s"
         chunk_id = f"{video_id}_{index:03d}"
 
         return Chunk(
@@ -492,6 +496,7 @@ class HybridChunker:
             token_count=token_count,
             section_type="main_content",
             youtube_link=youtube_link,
+            youtube_video_id=youtube_video_id,
         )
 
     def merge_chunks(self, chunk: Chunk, segments: list[Segment]) -> Chunk:
@@ -716,6 +721,7 @@ class HybridChunker:
         segments: list[Segment],
         video_id: str,
         video_title: str = "",
+        youtube_video_id: str = "",
     ) -> ChunkedVideo:
         """
         Main chunking algorithm using embedding-based boundary detection.
@@ -731,6 +737,7 @@ class HybridChunker:
             segments: List of transcript segments
             video_id: Video identifier
             video_title: Video title (optional)
+            youtube_video_id: Actual YouTube video ID for URL generation (optional)
 
         Returns:
             ChunkedVideo with child chunks and optional parent chunks
@@ -789,6 +796,7 @@ class HybridChunker:
                     index=chunk_index,
                     video_id=video_id,
                     video_title=video_title,
+                    youtube_video_id=youtube_video_id,
                 )
                 all_chunks.append(chunk)
                 chunk_index += 1
@@ -808,6 +816,7 @@ class HybridChunker:
                     index=chunk_index,
                     video_id=video_id,
                     video_title=video_title,
+                    youtube_video_id=youtube_video_id,
                 )
                 all_chunks.append(chunk)
             else:
