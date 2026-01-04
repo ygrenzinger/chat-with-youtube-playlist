@@ -146,16 +146,28 @@ class AudioTranscriber:
 
         client = self._get_client()
 
-        # Upload the audio file
+        # Upload the audio file with explicit MIME type
         logger.info("Uploading audio to Google GenAI...")
-        audio_file = client.files.upload(file=str(audio_path))
-        logger.info(f"Upload complete: {audio_file.name}")
+        mime_type = MIME_TYPES.get(audio_path.suffix.lower(), "audio/webm")
+        audio_file = client.files.upload(
+            file=str(audio_path),
+            config={"mime_type": mime_type}
+        )
+        logger.info(f"Upload complete: {audio_file.name} (mime_type={mime_type})")
 
-        # Wait for file to be processed
+        # Wait for file to be processed with retry logic
         while audio_file.state.name == "PROCESSING":
             logger.info("Waiting for file to be processed...")
-            time.sleep(2)
-            audio_file = client.files.get(name=audio_file.name)
+            time.sleep(10)
+            try:
+                audio_file = client.files.get(name=audio_file.name)
+            except Exception as e:
+                logger.warning(f"Error getting file status, retrying in 10s: {e}")
+                time.sleep(10)
+                continue
+
+        if audio_file.state.name == "FAILED":
+            raise RuntimeError(f"File processing failed. The file may be corrupted or too long.")
 
         if audio_file.state.name != "ACTIVE":
             raise RuntimeError(f"File processing failed: {audio_file.state.name}")
