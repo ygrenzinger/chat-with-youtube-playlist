@@ -210,25 +210,40 @@ For each segment provide: start_time, end_time, speaker, language, content."""
         Normalize timestamp to standard SRT format: HH:MM:SS,mmm
 
         Handles various Gemini output formats:
-        - MM:SS:mmm -> 00:MM:SS,mmm
-        - MM:SS,mmm -> 00:MM:SS,mmm
+        - MM:SS:mmm -> HH:MM:SS,mmm (with minutes overflow to hours)
+        - MM:SS,mmm -> HH:MM:SS,mmm
         - HH:MM:SS:mmm -> HH:MM:SS,mmm
         - HH:MM:SS,mmm -> HH:MM:SS,mmm (already valid)
         """
-        # Replace all separators with colons for parsing
+        # Replace comma with colon for uniform parsing
         parts = timestamp.replace(",", ":").split(":")
 
         if len(parts) == 3:
-            # Format: MM:SS:mmm -> add hours
-            mm, ss, mmm = parts
-            return f"00:{mm.zfill(2)}:{ss.zfill(2)},{mmm.zfill(3)}"
+            # Format: MM:SS:mmm - need to add hours and handle overflow
+            try:
+                minutes = int(parts[0])
+                seconds = int(parts[1])
+                millis = parts[2].zfill(3)
+
+                # Convert minutes overflow to hours
+                hours = minutes // 60
+                minutes = minutes % 60
+
+                return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis}"
+            except ValueError:
+                pass  # Fall through to fallback
+
         elif len(parts) == 4:
-            # Format: HH:MM:SS:mmm
-            hh, mm, ss, mmm = parts
-            return f"{hh.zfill(2)}:{mm.zfill(2)}:{ss.zfill(2)},{mmm.zfill(3)}"
-        else:
-            # Fallback: return as-is with comma separator
-            return timestamp.replace(":", ",", timestamp.count(":") - 1) if ":" in timestamp else timestamp
+            # Format: HH:MM:SS:mmm - just fix the separator
+            try:
+                hh, mm, ss, mmm = parts
+                return f"{int(hh):02d}:{int(mm):02d}:{int(ss):02d},{mmm.zfill(3)}"
+            except ValueError:
+                pass  # Fall through to fallback
+
+        # Fallback: return with default format if unparseable
+        logger.warning(f"Could not parse timestamp: {timestamp}")
+        return "00:00:00,000"
 
     def _convert_to_srt(self, transcription: dict) -> str:
         """
@@ -244,15 +259,11 @@ For each segment provide: start_time, end_time, speaker, language, content."""
         for i, segment in enumerate(transcription.get("segments", []), start=1):
             start_time = self._normalize_timestamp(segment.get("start_time", "00:00:00,000"))
             end_time = self._normalize_timestamp(segment.get("end_time", "00:00:00,000"))
-            speaker = segment.get("speaker", "")
             content = segment.get("content", "")
-
-            # Add speaker prefix if available
-            text = f"[{speaker}] {content}" if speaker else content
 
             srt_lines.append(str(i))
             srt_lines.append(f"{start_time} --> {end_time}")
-            srt_lines.append(text)
+            srt_lines.append(content)
             srt_lines.append("")  # Empty line between entries
 
         return "\n".join(srt_lines)
